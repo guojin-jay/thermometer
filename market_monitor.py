@@ -7,99 +7,11 @@ A股涨停情绪监控 - AKShare 数据源
 import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
-
-
-def get_zt_pool(date: str = None) -> pd.DataFrame:
-    """获取涨停池数据"""
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-    try:
-        df = ak.stock_zt_pool_em(date=date)
-        return df if df is not None else pd.DataFrame()
-    except Exception as e:
-        print(f"获取涨停数据失败: {e}")
-        return pd.DataFrame()
-
-
-def get_zb_pool(date: str = None) -> pd.DataFrame:
-    """获取炸板池数据"""
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-    try:
-        df = ak.stock_zt_pool_zbgc_em(date=date)
-        return df if df is not None else pd.DataFrame()
-    except Exception as e:
-        print(f"获取炸板数据失败: {e}")
-        return pd.DataFrame()
-
-
-def get_dt_pool(date: str = None) -> pd.DataFrame:
-    """获取跌停池数据"""
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-    try:
-        df = ak.stock_zt_pool_dtgc_em(date=date)
-        return df if df is not None else pd.DataFrame()
-    except Exception as e:
-        print(f"获取跌停数据失败: {e}")
-        return pd.DataFrame()
-
-
-def get_market_stats_by_batch(date: str = None) -> dict:
-    """
-    通过涨停池和炸板池数据间接计算市场涨跌情况
-    由于全市场数据接口不稳定，使用估算方法
-    """
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-    
-    try:
-        # 获取涨停池（含市场统计信息）
-        zt_df = ak.stock_zt_pool_em(date=date)
-        
-        if zt_df is None or zt_df.empty:
-            return {"涨跌比": "N/A", "跌超5%": "N/A"}
-        
-        # 从涨停池数据中提取市场统计
-        # 注意：涨停池数据本身不包含全市场涨跌信息，需要其他方式
-        
-        # 尝试使用指数数据
-        try:
-            # 上证指数数据
-            sh_df = ak.stock_zh_index_daily(symbol="000001")
-            if not sh_df.empty:
-                latest = sh_df.iloc[-1]
-                # 根据指数涨跌估算市场情绪
-                change = latest.get('close', 0) / latest.get('open', 1) - 1
-                change_pct = change * 100
-                
-                # 粗略估算涨跌家数比（基于经验公式）
-                # 指数涨幅1%约等于上涨家数略多
-                if change_pct > 0:
-                    up_down_ratio = 1.1 + change_pct / 5  # 上涨时涨跌比 > 1
-                else:
-                    up_down_ratio = 0.9 + change_pct / 5   # 下跌时涨跌比 < 1
-                up_down_ratio = max(0.1, up_down_ratio)
-                
-                return {
-                    "指数涨跌": f"{change_pct:.2f}%",
-                    "涨跌比": f"{up_down_ratio:.2f}"
-                }
-        except Exception as e:
-            print(f"获取指数数据失败: {e}")
-        
-        return {"涨跌比": "N/A", "跌超5%": "N/A"}
-        
-    except Exception as e:
-        print(f"获取市场统计数据失败: {e}")
-        return {"涨跌比": "N/A", "跌超5%": "N/A"}
+from kaipanla_api import get_zt_pool, get_zb_pool, get_dt_pool, get_down_5pct_count
 
 
 def get_yesterday_zt_performance(date: str = None) -> dict:
-    """
-    计算昨日涨停股今日表现
-    通过对比昨日涨停池和今日涨停池/炸板池
-    """
+    """计算昨日涨停股今日表现"""
     if date is None:
         date = datetime.now().strftime("%Y%m%d")
     
@@ -140,44 +52,30 @@ def get_yesterday_zt_performance(date: str = None) -> dict:
         # 昨日涨停今日炸板
         zt_zb_count = len(prev_codes & today_zb_codes)
         
-        # 昨日涨停今日平盘或回调（不在涨停也不在炸板）
-        zt_other_count = prev_count - zt_zt_count - zt_zb_count
-        
-        # 红盘比例估算：
-        # - 继续涨停算红盘
-        # - 炸板算非红盘（涨幅<10%）
-        # - 其他情况无法确定，简化为：继续涨停/总数量
+        # 红盘比例 = 继续涨停 / 总数量
         red_ratio = zt_zt_count / prev_count * 100 if prev_count > 0 else 0
         
         # 平均涨幅估算：
         # - 继续涨停：10%
-        # - 炸板：从涨停池获取实际涨幅
-        # - 其他：0%
-        total_return = zt_zt_count * 10  # 继续涨停按10%算
+        # - 炸板：从炸板数据获取实际涨幅
+        total_return = zt_zt_count * 10.0  # 继续涨停按10%算
         
+        zb_count = 0
         if not today_zb_df.empty:
-            # 获取炸板股的涨幅
             zb_prev_zt = today_zb_df[today_zb_df["代码"].isin(prev_codes)]
             if not zb_prev_zt.empty and "涨跌幅" in zb_prev_zt.columns:
                 zb_returns = zb_prev_zt["涨跌幅"].tolist()
                 total_return += sum(zb_returns)
                 zb_count = len(zb_returns)
-            else:
-                zb_count = 0
-        else:
-            zb_count = 0
         
-        # 其他未涨停的按0涨幅算
         other_count = prev_count - zt_zt_count - zb_count
         avg_return = total_return / prev_count if prev_count > 0 else 0
         
-        # 连板收益：昨日连板股今日表现
+        # 连板收益
         if prev_lb_codes:
-            lb_zt_count = len(prev_lb_codes & today_zt_codes)  # 继续连板
-            lb_zb_count = len(prev_lb_codes & today_zb_codes)  # 连板炸板
+            lb_zt_count = len(prev_lb_codes & today_zt_codes)
             
-            # 估算连板收益
-            lb_total_return = lb_zt_count * 10
+            lb_total_return = lb_zt_count * 10.0
             if not today_zb_df.empty:
                 zb_lb = today_zb_df[today_zb_df["代码"].isin(prev_lb_codes)]
                 if not zb_lb.empty and "涨跌幅" in zb_lb.columns:
@@ -192,8 +90,6 @@ def get_yesterday_zt_performance(date: str = None) -> dict:
             "红盘比例": f"{red_ratio:.1f}%",
             "昨板今均": f"{avg_return:.2f}%",
             "做连板收益": lb_avg_return_str,
-            "昨板今板": zt_zt_count,
-            "昨板今炸": zt_zb_count,
         }
         
     except Exception as e:
@@ -245,17 +141,15 @@ def calculate_stats(date: str = None) -> dict:
     prev_stats = get_yesterday_zt_performance(date)
     
     # ========== 3. 总体涨跌比 ==========
-    # 由于全市场数据接口不稳定，暂时用涨停池数据估算
-    market_stats = get_market_stats_by_batch(date)
-    
-    # 估算总体涨跌比（基于经验）
-    # 涨停多说明市场强，但需要结合炸板率判断
-    # 简化：涨停/跌停 比值作为参考
     zt_dt_ratio = zt_count / dt_count if dt_count > 0 else zt_count
+    
+    # ========== 4. 跌幅超5% ==========
+    print("\n获取跌幅超过5%的股票数量...")
+    down5_count = get_down_5pct_count(date)
     
     stats = {
         "日期": date,
-        "总体涨跌比": f"{zt_dt_ratio:.2f}",  # 简化为涨停/跌停比
+        "总体涨跌比": f"{zt_dt_ratio:.2f}",
         "昨日涨停红盘比例": prev_stats.get("红盘比例", "N/A"),
         "昨板今均": prev_stats.get("昨板今均", "N/A"),
         "做连板收益": prev_stats.get("做连板收益", "N/A"),
@@ -264,7 +158,7 @@ def calculate_stats(date: str = None) -> dict:
         "曾涨停": strong_count,
         "炸板率": f"{zb_rate:.2f}%",
         "跌停": dt_count,
-        "跌幅-5%以上": "需补充",  # 需要全市场数据
+        "跌幅-5%以上": down5_count if down5_count >= 0 else "N/A",
         "高度板": height_board,
     }
     
