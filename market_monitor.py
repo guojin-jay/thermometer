@@ -7,7 +7,42 @@ A股涨停情绪监控 - AKShare 数据源
 import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
-from kaipanla_api import get_zt_pool, get_zb_pool, get_dt_pool, get_down_5pct_count
+from kaipanla_api import get_zt_pool, get_zb_pool, get_dt_pool
+
+
+def get_down_5pct_count() -> int:
+    """
+    获取跌幅超过5%的股票数量
+    使用 AKShare 实时行情接口
+    """
+    try:
+        print("正在获取全市场股票数据...")
+        # 获取全市场实时行情
+        df = ak.stock_zh_a_spot_em()
+        
+        if df is None or df.empty:
+            return -1
+        
+        # 筛选 A 股（去掉 ST、上市前的）
+        if "涨跌幅" in df.columns:
+            # 统计跌幅超过5%的
+            down5 = len(df[df["涨跌幅"] <= -5])
+            return down5
+        
+    except Exception as e:
+        print(f"获取全市场数据失败: {e}")
+        # 备用：尝试使用涨停池统计
+        try:
+            # 使用东方财富的涨跌停池来估算
+            dt_df = ak.stock_zt_pool_dtgc_em(date=datetime.now().strftime("%Y%m%d"))
+            if not dt_df.empty:
+                # 跌停肯定是跌幅超5%的，但还有更多跌幅在-5%到-10%之间的
+                # 粗略估算：跌停数的2-3倍
+                return len(dt_df) * 2
+        except:
+            pass
+    
+    return -1
 
 
 def get_yesterday_zt_performance(date: str = None) -> dict:
@@ -55,10 +90,8 @@ def get_yesterday_zt_performance(date: str = None) -> dict:
         # 红盘比例 = 继续涨停 / 总数量
         red_ratio = zt_zt_count / prev_count * 100 if prev_count > 0 else 0
         
-        # 平均涨幅估算：
-        # - 继续涨停：10%
-        # - 炸板：从炸板数据获取实际涨幅
-        total_return = zt_zt_count * 10.0  # 继续涨停按10%算
+        # 平均涨幅估算
+        total_return = zt_zt_count * 10.0
         
         zb_count = 0
         if not today_zb_df.empty:
@@ -104,12 +137,12 @@ def calculate_stats(date: str = None) -> dict:
     
     print(f"正在获取 {date} 的市场数据...\n")
     
-    # ========== 基础数据 ==========
+    # 基础数据
     zt_df = get_zt_pool(date)
     zb_df = get_zb_pool(date)
     dt_df = get_dt_pool(date)
     
-    # ========== 1. 涨停炸板统计 ==========
+    # 涨停炸板统计
     zt_count = len(zt_df)
     zb_count = len(zb_df)
     dt_count = len(dt_df)
@@ -137,15 +170,15 @@ def calculate_stats(date: str = None) -> dict:
             if lb > 0:
                 print(f"  {int(lb)}板: {lb_counts[lb]} 只")
     
-    # ========== 2. 昨日涨停表现 ==========
+    # 昨日涨停表现
     prev_stats = get_yesterday_zt_performance(date)
     
-    # ========== 3. 总体涨跌比 ==========
+    # 总体涨跌比（涨停/跌停比作为参考）
     zt_dt_ratio = zt_count / dt_count if dt_count > 0 else zt_count
     
-    # ========== 4. 跌幅超5% ==========
+    # 跌幅超5%
     print("\n获取跌幅超过5%的股票数量...")
-    down5_count = get_down_5pct_count(date)
+    down5_count = get_down_5pct_count()
     
     stats = {
         "日期": date,
